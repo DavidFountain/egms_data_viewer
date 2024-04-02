@@ -15,11 +15,13 @@ import os
 import numpy as np
 import plotly.express as px
 import plotly.io as pio
+from datetime import datetime
 from components.dropdown import render_dropdown
-from components.sidebar import sidebar
+from components.user_input import render_number_input
 from components.navbar import navbar
 from assets.style import CONTENT_STYLE
 import utils.convert_data as cvd
+import utils.bgs_egms_functions as efs
 from utils.visualisations import plot_ts_scatterplot, plot_blank_scatterplot
 from dotenv import load_dotenv
 
@@ -36,94 +38,80 @@ app = Dash(
 
 
 warnings.filterwarnings("ignore")
-# dash.register_page(__name__, path="/")
 
 PROJECT_CRS = os.getenv("PROJECT_CRS")
 EGMS_DATA_DIR = os.getenv("EGMS_DATA_DIR")
 
-# controls = dbc.CardGroup(
-#     [
-#         dbc.Card(
-#             [
-#                 html.Div(
-#                     [
-#                         dbc.Label("Product Level"),
-#                         render_dropdown(
-#                             id="product-dropdown",
-#                             items=["ortho"]
-#                         )
-#                     ]
-#                 ),
-#             ],
-#             body=True
-#         ),
-#         dbc.Card(
-#             [
-#                 html.Div(
-#                     [
-#                         dbc.Label("Direction"),
-#                         render_dropdown(
-#                             id="direction-dropdown",
-#                             items=["vertical", "horizontal"]
-#                             )
-#                     ]
-#                 ),
-#             ],
-#             body=True
-#         ),
-#     ],
-#     style={"maxWidth": "1920px"},
-# )
+map_controls = dbc.Card(
+    dbc.CardBody(
+        [
+            html.Div(
+                [
+                    dbc.Label("Product Level"),
+                    render_dropdown(
+                        id="product-dropdown",
+                        items=["ortho"]
+                        )
+                ],
+                disable_n_clicks=True
+            ),
+            html.Hr(),
+            html.Div(
+                [
+                    dbc.Label("Direction"),
+                    render_dropdown(
+                        id="direction-dropdown",
+                        items=["vertical", "horizontal"]
+                        )
+                ],
+                disable_n_clicks=True
+            ),
+            html.Hr(),
+            dbc.Label("Color Bar"),
+            dbc.InputGroup(
+                [
+                    dbc.InputGroupText("Min"),
+                    dbc.Input(id="min-color-input", placeholder="-20"),
+                ],
+                class_name="mb-2"
+            ),
+            dbc.InputGroup(
+                [
+                    dbc.InputGroupText("Max"),
+                    dbc.Input(id="max-color-input", placeholder="20"),
+                ],
+                class_name="mb-2"
+            ),
+            html.Hr(),
+            html.Div(
+                [
+                    dcc.Loading(
+                        children=[
+                            dbc.Button(
+                                children="Get Data",
+                                id="get-data-button",
+                                color="primary",
+                                class_name="me-2",
+                                n_clicks=0
+                            ),
+                            dbc.Button(
+                                children="Reset Data",
+                                id="reset-data-button",
+                                color="warning",
+                                class_name="me-2",
+                                n_clicks=0
+                            ),
+                            html.P(id="measurement_counter")
+                        ]
+                    ),
+                ],
+                id="get-data-button-container",
+                style={'display': 'none'},
+                disable_n_clicks=True
+            )
+        ]
 
-controls = dbc.Card(
-    [
-        html.Div(
-            [
-                dbc.Label("Product Level"),
-                render_dropdown(
-                    id="product-dropdown",
-                    items=["ortho"]
-                    )
-            ]
-        ),
-        html.Hr(),
-        html.Div(
-            [
-                dbc.Label("Direction"),
-                render_dropdown(
-                    id="direction-dropdown",
-                    items=["vertical", "horizontal"]
-                    )
-            ]
-        ),
-        html.Hr(),
-        html.Div(
-            [
-                dcc.Loading(
-                    children=[
-                        dbc.Button(
-                            children="Get Data",
-                            id="get-data-button",
-                            color="primary",
-                            class_name="me-2",
-                            n_clicks=0
-                        ),
-                        dbc.Button(
-                            children="Reset Data",
-                            id="reset-data-button",
-                            color="warning",
-                            class_name="me-2",
-                            n_clicks=0
-                        ),
-                        html.P(id="measurement_counter")
-                    ]
-                ),
-            ],
-            id="get-data-button-container",
-            style={'display': 'none'},
-        )
-    ],
-    body=True
+    )
 )
 
 default_map_children = [
@@ -207,13 +195,14 @@ app.layout = dbc.Container(
     [
         dcc.Store(id="intersect-tiles", storage_type="session"),
         dcc.Store(id="egms-ts-data", data=[], storage_type="session"),
+        dcc.Store(id="stl-plr-data", data=[], storage_type="session"),
         dcc.Location(id="url"),
         navbar,
         html.Hr(),
         dbc.Row(
             [
                 dbc.Col(
-                    controls,
+                    map_controls,
                     md=2,
                 ),
                 dbc.Col(
@@ -235,18 +224,24 @@ app.layout = dbc.Container(
             [
                 dbc.Col(
                     dbc.Card(
-                        dcc.Loading(
-                            [
-                                html.P(
-                                    id="scatterplot_ts_header",
-                                    style={"font-weight": "bold"}
-                                ),
-                                dcc.Graph(
-                                    id="scatterplot_ts",
-                                    figure=plot_blank_scatterplot("")
-                                )
-                            ]
-                        ),
+                        [
+                            dcc.Loading(
+                                [
+                                    html.P(
+                                        id="scatterplot_ts_header",
+                                        style={"font-weight": "bold"}
+                                    ),
+                                    dcc.Graph(
+                                        id="scatterplot_ts",
+                                        figure=plot_blank_scatterplot("")
+                                    )
+                                ]
+                            ),
+                            dcc.Graph(
+                                id="scatterplot_trend",
+                                figure=plot_blank_scatterplot("")
+                            )
+                        ],
                         body=True,
                     ),
                     md={"size": 10, "offset": 2}
@@ -290,12 +285,6 @@ def get_egms_tiles(direction, map_input):
 )
 def get_ts_data(clicks, stored_data, map_input, product, direction):
     if clicks > 0:
-        # try:
-        #     if stored_data is None or not json.loads(stored_data)["features"]:
-        #         return dash.no_update, dash.no_update, dash.no_update, "Draw polygon on map to find EGMS tiles..."
-        # except: # should be TypeError but it's not catching it?!
-        #     if stored_data is None or not stored_data["features"]:
-        #         return dash.no_update, dash.no_update, dash.no_update, "Draw polygon on map to find EGMS tiles..."
 
         tile_ids = cvd.convert_json_to_geodataframe(stored_data)["tile"]
         fpath = get_data_file_paths(product, direction)
@@ -376,20 +365,25 @@ def toggle_visibility(stored_data):
 @callback(
     Output("leaflet-map", "children", allow_duplicate=True),
     Input("egms-ts-data", "data"),
+    Input("min-color-input", "value"),
+    Input("max-color-input", "value"),
     prevent_initial_call=True
 )
-def update_scatterplot_map(stored_data):
+def update_scatterplot_map(stored_data, min_color, max_color):
     if stored_data is None or stored_data == []:
         raise PreventUpdate
+    if min_color is None or min_color == "":
+        min_color = -20
+    if max_color is None or max_color == "":
+        max_color = 20
     gdf = cvd.convert_json_to_geodataframe(stored_data).to_crs("EPSG:4326")
     gdf = gdf[["pid", "mean_velocity", "geometry"]]
     geojson = json.loads(gdf.to_json())
     # geobuf = dlx.geojson_to_geobuf(geojson)
     colorscale = ['red', 'yellow', 'green', 'blue', 'purple']  # rainbow
-    # Create a colorbar.
-    vmin = -20
-    vmax = 20
-    colorbar = dl.Colorbar(colorscale=colorscale, width=20, height=150, min=vmin, max=vmax, unit='/km2')
+    # Create a colorbar
+    colorbar = dl.Colorbar(colorscale=colorscale, width=20, height=150,
+                           min=min_color, max=max_color, unit='mm/yr')
     # Geojson rendering logic, must be JavaScript as it is executed in clientside.
     on_each_feature = assign("""function(feature, layer, context){
         layer.bindTooltip(`${feature.properties.pid} (${feature.properties.mean_velocity})`)
@@ -427,6 +421,7 @@ def update_scatterplot_map(stored_data):
         });
         return L.marker(latlng, {icon : icon})
     }""")
+
     # Create geojson.
     geojson = dl.GeoJSON(
         id="point-data",
@@ -439,8 +434,8 @@ def update_scatterplot_map(stored_data):
         onEachFeature=on_each_feature,  # add (custom) tooltip
         zoomToBoundsOnClick=True,  # when true, zooms to bounds of feature (e.g. cluster) on click
         superClusterOptions=dict(radius=150),   # adjust cluster size
-        hideout=dict(colorProp='mean_velocity', circleOptions=dict(fillOpacity=1, stroke=False, radius=5),
-                     min=vmin, max=vmax, colorscale=colorscale),
+        hideout=dict(colorProp="mean_velocity", circleOptions=dict(fillOpacity=1, stroke=False, radius=5),
+                     min=min_color, max=max_color, colorscale=colorscale),
         )
 
     return dl.Map(children=[
@@ -485,6 +480,51 @@ def update_scatterplot_ts(click_data, stored_data):
         return fig, f"Displaying data for PID: {pid}"
 
     return plot_blank_scatterplot(), None
+
+
+@callback(
+    Output("stl-plr-data", "data"),
+    Input("point-data", "clickData"),
+    Input("egms-ts-data", "data"),
+    prevent_initial_call=True
+)
+def run_stl_plr_analysis(click_data, stored_data):
+    if click_data is not None:
+        pid = cvd.get_point_data(click_data)
+        gdf = cvd.convert_json_to_geodataframe(stored_data)
+        ts_df = cvd.get_timeseries_from_pid(gdf, pid)
+        dates = [datetime.strptime(d, "%Y%m%d") for d in ts_df.columns]
+        date_decs = np.array([efs.datetime_to_datedec(d) for d in dates])
+        trend, season, resids, segs_x, segs_y, pred_Y, segs, adj_R2 = efs.STL_PLR_analysis(ts_df.T, date_decs, 61, 0.03)
+        return trend, season, resids, segs_x, segs_y, pred_Y, segs, adj_R2
+
+
+@callback(
+    Output("scatterplot_trend", "figure"),
+    # Output("scatterplot_ts_header", "children"),
+    Input("point-data", "clickData"),
+    Input("stl-plr-data", "data"),
+    prevent_initial_call=True
+)
+def update_scatterplot_trend(click_data, stored_data):
+
+    if stored_data is not None:
+        # data = json.loads(stored_data)
+        data = stored_data
+        df = pd.DataFrame(
+            {
+                "idx": np.arange(1, len(data[0])+1),
+                "Trend": data[0],
+                "Seasonality": data[1],
+                "Residualas": data[2]
+            }
+        )
+        df = pd.melt(df, id_vars="idx", var_name="metric", value_name="Velocity (mm)")
+        fig = px.scatter(df, x="idx", y="Velocity (mm)", facet_row="metric", color="metric")
+        fig.update_yaxes(matches=None)
+        return fig
+
+    return plot_blank_scatterplot()
 
 
 if __name__ == '__main__':
